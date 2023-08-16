@@ -1,6 +1,3 @@
-Certainly! Here's the README in Markdown format:
-
-```markdown
 # AI-based Web Vulnerability Detector for Burp Suite
 
 ## Overview
@@ -71,6 +68,3 @@ Feel free to open issues for bugs, enhancement requests, or other inquiries. Con
 ## Disclaimer
 
 This tool is provided for educational and research purposes only. Ensure that you have proper authorization before scanning any systems.
-```
-
-You can copy and paste this directly into a README.md file in your project repository, and it will render properly on platforms like GitHub.
