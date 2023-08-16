@@ -48,7 +48,8 @@
 ## 要求
 
 - Burp Suite Professional
-- Java运行时环境（JRE）8或更高版本
+- 导入jython
+   https://repo1.maven.org/maven2/org/python/jython-standalone/2.7.2/jython-standalone-2.7.2.jar
 
 ## 支持和贡献
 
