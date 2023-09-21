@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 import json
+import time
 
 from java.awt.datatransfer import StringSelection
 from javax.swing.table import TableRowSorter
@@ -19,10 +20,13 @@ from java.lang import Math
 from javax.swing import JTextArea
 from burp import ITab
 from burp import IMessageEditorController
-from java.net import URL
 from thread import start_new_thread
 
+from prompts.prompt_class import ANALYSIS_PROMPT
 from table import Table, LogEntry
+from utils.logger import Logger
+from utils.taskprocess import SingleTaskListStorage, TaskProcess, openai_embedding_call, openai_call
+from utils.pinecone_storage import use_pinecone
 
 
 class ITabImpl(ITab):
@@ -83,9 +87,8 @@ class Tabs():
         send2ChatGPT.addActionListener(Send2ChatGPT(self._extender, self._extender._callbacks, self._extender._helpers))
 
         # openai生成payload
-        generateRequestByChatGPT = JMenuItem("Generate payload with AI")
-        generateRequestByChatGPT.addActionListener(
-            GenerateRequestByOpenAI(self._extender, self._extender._callbacks, self._extender._helpers))
+        autonomousPentest = JMenuItem("Generate payload with AI")
+        autonomousPentest.addActionListener(AutonomousPentest(self._extender, self._extender._callbacks, self._extender._helpers))
 
         deleteSelectedItem = JMenuItem("Delete")
         deleteSelectedItem.addActionListener(DeleteSelectedRequest(self._extender))
@@ -96,7 +99,7 @@ class Tabs():
         self._extender.menu.add(sendResponseMenu)
         self._extender.menu.add(copyURLitem)
         self._extender.menu.add(send2ChatGPT)
-        self._extender.menu.add(generateRequestByChatGPT)
+        self._extender.menu.add(autonomousPentest)
         message_editor = MessageEditor(self._extender)
 
         self._extender.tabs = JTabbedPane()
@@ -141,78 +144,40 @@ class Send2ChatGPT(ActionListener):
 
     def actionPerformed(self, e):
         messageInfo = self._extender._currentlyDisplayedItem._requestResponse
-        start_new_thread(self.async_send_to_openai, (messageInfo,))
+        start_new_thread(self.async_analysisOrgRequest, (messageInfo,))
 
-    def async_send_to_openai(self, message_info):
-        # 获取OPENAI配置
-        OPENAI_KEY = self._extender.KEYTRType.getText()
-        MODEL = self._extender.IFType.getSelectedItem()
-        TEMP = self._extender.TEMTRType.getSelectedItem()
-
-        request = message_info.getRequest()
-        response = message_info.getResponse()
+    def async_analysisOrgRequest(self, messageInfo):
+        conversation_history = {}
+        extender = self._extender
+        # print("BurpCopilotPrompt.init_session = ", BurpCopilotPrompt.init_session)
+        # init_content = sendMessageOpenAI(extender, BurpCopilotPrompt.init_session)
+        # 将响应添加到历史记录
+        # conversation_history[0] = init_content
+        # 将历史记录组合成新的提示
+        request = messageInfo.getRequest()
+        response = messageInfo.getResponse()
         # 打印请求
         request_info = self._helpers.analyzeRequest(request)
         headers_list = request_info.getHeaders()
         headers_str = '\n'.join(headers_list)
         request_body_bytes = bytearray(request[request_info.getBodyOffset():])
         request_str = headers_str + '\n' + request_body_bytes.decode('utf-8')
-        print("Request:")
-        print(request_str)
-
         # 打印响应
         response_info = self._helpers.analyzeResponse(response)
         headers_list = response_info.getHeaders()
         headers_str = '\n'.join(headers_list)
         response_body_bytes = bytearray(response[response_info.getBodyOffset():])
-        response_str = headers_str + '\n' + response_body_bytes.decode('utf-8')
-        print("Response:")
-        print(response_str)
-        prompt_template = (
-            '请分析以下HTTP请求和响应的潜在安全漏洞，特别关注OWASP十大漏洞，如SQL注入、XSS、CSRF等常见的web应用程序安全威胁,\n'
-            '将你的回答格式为一个项目列表，每个点列出一个漏洞名称和简要描述，格式如下::\n'
-            '-- 漏洞名称:对漏洞的简要描述,排除无关信息\n'
-            '=== Request ===\n'
-            '```{request_str}```\n'
-            '=== Response ===\n'
-            '```{response_str}```\n'
-        )
-
-        prompt = prompt_template.format(request_str=request_str, response_str=response_str)
-
-        # 设置OpenAI API的URL
-        OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
-
-        # 设置所需的认证令牌
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + OPENAI_KEY
+        response_str = headers_str # + '\n' + response_body_bytes.decode('utf-8')
+        prompt_json = {
+                "Question": ANALYSIS_PROMPT,
+                "Request": request_str,
+                "Response": response_str,
+                "Answer": ""
         }
-
-        # 构建发送到OpenAI API所需的数据
-        payload = {
-            "messages": [{"role": "user", "content": prompt}],
-            "model": MODEL,
-            "temperature": TEMP
-        }
-
-        java_url = URL(OPENAI_URL)
-        connection = java_url.openConnection()
-        connection.setRequestMethod("POST")
-
-        for key, value in headers.items():
-            connection.setRequestProperty(key, value)
-
-        connection.setDoOutput(True)
-        outputStream = connection.getOutputStream()
-        outputStream.write(json.dumps(payload).encode('utf-8'))
-        outputStream.close()
-        responseCode = connection.getResponseCode()
-        # 检查请求是否成功，并返回结果
-        input_stream = connection.getInputStream()
-        response_body = ''.join([chr(x) for x in iter(lambda: input_stream.read(), -1)])
-        jsonresult = json.loads(response_body)
-        content = jsonresult["choices"][0]["message"]["content"]
+        conversation_history[0] = prompt_json
+        conversation_history_string = json.dumps(conversation_history)
+        print("conversation_history: ", conversation_history_string)
+        content = openai_call(extender, conversation_history_string)
         # 更新到控件中
         self._extender.aicommentsTextArea.setText(content)
         # 更新到LogEntry
@@ -224,11 +189,11 @@ class Send2ChatGPT(ActionListener):
                                               length=self._extender.tableModel.getValueAt(row, 4),
                                               mime_type=self._extender.tableModel.getValueAt(row, 5),
                                               cookies=self._extender.tableModel.getValueAt(row, 6),
-                                              requestResponse=message_info, aicomments=content,
+                                              requestResponse=messageInfo, aicomments=content,
                                               modifiedRequest=self._extender._airequestViewer.getMessage()))
 
 
-class GenerateRequestByOpenAI(ActionListener):
+class AutonomousPentest(ActionListener):
     def __init__(self, extender, callbacks, helpers):
         self._extender = extender
         self._callbacks = callbacks
@@ -236,88 +201,83 @@ class GenerateRequestByOpenAI(ActionListener):
 
     def actionPerformed(self, e):
         messageInfo = self._extender._currentlyDisplayedItem._requestResponse
-        start_new_thread(self.async_generate_request, (messageInfo,))
+        start_new_thread(self.async_autonomousPentest, (messageInfo,))
 
-    def async_generate_request(self, message_info):
-        # 获取OPENAI配置
-        OPENAI_KEY = self._extender.KEYTRType.getText()
-        MODEL = self._extender.IFType.getSelectedItem()
-        TEMP = self._extender.TEMTRType.getSelectedItem()
+    def async_autonomousPentest(self, messageInfo):
+        extender = self._extender
+        helpers = self._helpers
+        logger = Logger()
+        openai_key = extender.KEYTRType.getText()
 
-        request = message_info.getRequest()
-        response = message_info.getResponse()
-        # 打印请求
-        request_info = self._helpers.analyzeRequest(request)
-        headers_list = request_info.getHeaders()
-        headers_str = '\n'.join(headers_list)
-        request_body_bytes = bytearray(request[request_info.getBodyOffset():])
-        request_str = headers_str + '\n' + request_body_bytes.decode('utf-8')
-        print("Request:")
-        print(request_str)
+        objective = "I want to test web application" # 任务目标
+        # content = openai_embedding_call(openai_key, objective)
+        # dict2string = json.dumps(content)
+        # logger.debug(content)
 
-        # 打印响应
-        response_info = self._helpers.analyzeResponse(response)
-        headers_list = response_info.getHeaders()
-        headers_str = '\n'.join(headers_list)
-        response_body_bytes = bytearray(response[response_info.getBodyOffset():])
-        response_str = headers_str  # + '\n' + response_body_bytes.decode('utf-8')
-        print("Response:")
-        print(response_str)
-        prompt_template = (
-            '请分析以下HTTP请求和响应的潜在安全漏洞，特别关注OWASP十大漏洞，如SQL注入、XSS、CSRF等常见的web应用程序安全威胁,\n'
-            '请根据以下的Request生成一个新的Reqest来测试是否存在安全漏洞, 你的输出为新的Request,该输出将直接在BurpSuite中发送, 且输出中不能带有中文.\n'
-            '=== Request ===\n'
-            '{request_str}\n'
-        )
+        # Initialize tasks storage
+        tasks_storage = SingleTaskListStorage()
+        loop = True
+        # 所欲偶的测试结果都存入向量存储
+        results_storage = use_pinecone(extender, objective)
+        taskprocess = TaskProcess(extender, results_storage, objective)
+        while loop:
+            # As long as there are tasks in the storage...
+            if not tasks_storage.is_empty():
+                # Print the task list
+                logger.debug("\033[95m\033[1m" + "\n*****TASK LIST*****\n" + "\033[0m\033[0m")
+                for t in tasks_storage.get_task_names():
+                    logger.debug(" • " + str(t))
 
-        prompt = prompt_template.format(request_str=request_str, response_str=response_str)
+                # task = tasks_storage.popleft()
+                # logger.debug("\033[92m\033[1m" + "\n*****NEXT TASK*****\n" + "\033[0m\033[0m")
+                # logger.debug(str(task["task_name"]))
+                #
+                # result = taskprocess.execution_agent(objective, str(task["task_name"]))
+                # logger.debug("\033[93m\033[1m" + "\n*****TASK RESULT*****\n" + "\033[0m\033[0m")
+                # logger.debug(result)
+                #
+                # enriched_result = {
+                #     "data": result
+                # }
+                #
+                # result_id = "result_{}".format(task['task_id'])
+                # results_storage.add(task, result, result_id)
+                # new_tasks = taskprocess.task_creation_agent(
+                #     objective,
+                #     enriched_result,
+                #     task["task_name"],
+                #     tasks_storage.get_task_names(),
+                # )
+                #
+                # logger.debug('Adding new tasks to task_storage')
+                # for new_task in new_tasks:
+                #     new_task.update({"task_id": tasks_storage.next_task_id()})
+                #     logger.debug(str(new_task))
+                #     tasks_storage.append(new_task)
+                #
+                # prioritized_tasks = taskprocess.prioritization_agent()
+                # if prioritized_tasks:
+                #     tasks_storage.replace(prioritized_tasks)
+                # time.sleep(5)
+            else:
+                print('Done.')
+                loop = False
 
-        # 设置OpenAI API的URL
-        OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
-
-        # 设置所需的认证令牌
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + OPENAI_KEY
-        }
-
-        # 构建发送到OpenAI API所需的数据
-        payload = {
-            "messages": [{"role": "user", "content": prompt}],
-            "model": MODEL,
-            "temperature": TEMP
-        }
-
-        java_url = URL(OPENAI_URL)
-        connection = java_url.openConnection()
-        connection.setRequestMethod("POST")
-
-        for key, value in headers.items():
-            connection.setRequestProperty(key, value)
-
-        connection.setDoOutput(True)
-        outputStream = connection.getOutputStream()
-        outputStream.write(json.dumps(payload).encode('utf-8'))
-        outputStream.close()
-        responseCode = connection.getResponseCode()
-        # 检查请求是否成功，并返回结果
-        input_stream = connection.getInputStream()
-        response_body = ''.join([chr(x) for x in iter(lambda: input_stream.read(), -1)])
-        jsonresult = json.loads(response_body)
-        content = jsonresult["choices"][0]["message"]["content"]
         # 更新到控件中
-        self._extender._airequestViewer.setMessage(content, True)
+        # self._extender._airequestViewer.setMessage(dict2string, True)
         # 更新到LogEntry
-        row = self._extender.logTable.getSelectedRow()
-        self._extender._log.set(row, LogEntry(id=self._extender.tableModel.getValueAt(row, 0),
-                                              method=self._extender.tableModel.getValueAt(row, 1),
-                                              url=self._extender.tableModel.getValueAt(row, 2),
-                                              status=self._extender.tableModel.getValueAt(row, 3),
-                                              length=self._extender.tableModel.getValueAt(row, 4),
-                                              mime_type=self._extender.tableModel.getValueAt(row, 5),
-                                              cookies=self._extender.tableModel.getValueAt(row, 6),
-                                              requestResponse=message_info, aicomments=self._extender.aicommentsTextArea.getText(),
-                                              modifiedRequest=content))
+        # row = self._extender.logTable.getSelectedRow()
+        # self._extender._log.set(row, LogEntry(id=self._extender.tableModel.getValueAt(row, 0),
+        #                                       method=self._extender.tableModel.getValueAt(row, 1),
+        #                                       url=self._extender.tableModel.getValueAt(row, 2),
+        #                                       status=self._extender.tableModel.getValueAt(row, 3),
+        #                                       length=self._extender.tableModel.getValueAt(row, 4),
+        #                                       mime_type=self._extender.tableModel.getValueAt(row, 5),
+        #                                       cookies=self._extender.tableModel.getValueAt(row, 6),
+        #                                       requestResponse=messageInfo,
+        #                                       aicomments=self._extender.aicommentsTextArea.getText(),
+        #                                       modifiedRequest=content))
+
 
 class SendRequestRepeater(ActionListener):
     def __init__(self, extender, callbacks, original):
@@ -337,6 +297,7 @@ class SendRequestRepeater(ActionListener):
 
         self._callbacks.sendToRepeater(host, port, secure, request.getRequest(), "Autorize")
 
+
 class SendResponseComparer(ActionListener):
     def __init__(self, extender, callbacks):
         self._extender = extender
@@ -351,6 +312,7 @@ class SendResponseComparer(ActionListener):
         self._callbacks.sendToComparer(modifiedResponse.getResponse())
         self._callbacks.sendToComparer(unauthorizedResponse.getResponse())
 
+
 class DeleteSelectedRequest(ActionListener):
     def __init__(self, extender):
         self._extender = extender
@@ -358,6 +320,7 @@ class DeleteSelectedRequest(ActionListener):
     def actionPerformed(self, e):
         # TODO: Implement this function.
         pass
+
 
 class CopySelectedURL(ActionListener):
     def __init__(self, extender):
@@ -369,6 +332,7 @@ class CopySelectedURL(ActionListener):
         clpbrd = Toolkit.getDefaultToolkit().getSystemClipboard()
         clpbrd.setContents(stringSelection, None)
 
+
 class AutoScrollListener(AdjustmentListener):
     def __init__(self, extender):
         self._extender = extender
@@ -376,6 +340,7 @@ class AutoScrollListener(AdjustmentListener):
     def adjustmentValueChanged(self, e):
         if self._extender.autoScroll.isSelected():
             e.getAdjustable().setValue(e.getAdjustable().getMaximum())
+
 
 class MessageEditor(IMessageEditorController):
     def __init__(self, extender):
@@ -389,6 +354,7 @@ class MessageEditor(IMessageEditorController):
 
     def getResponse(self):
         return self._extender._currentlyDisplayedItem.getResponse()
+
 
 class Mouseclick(MouseAdapter):
     def __init__(self, extender):

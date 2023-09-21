@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-
+import json
 import sys
 from javax.swing import SwingUtilities
 from gui.table import UpdateTableEDT, LogEntry
@@ -118,7 +118,6 @@ def checkwithAI(self, messageInfo):
     SwingUtilities.invokeLater(UpdateTableEDT(self, "insert", row, row))
     self.currentRequestNumber = self.currentRequestNumber + 1
     self._lock.release()
-
 
 def retestAllRequests(self):
     for i in range(self.tableModel.getRowCount()):
